@@ -57,10 +57,25 @@ def load_image(path: str) -> Image.Image:
     return Image.open(p)
 
 
+MAX_INLINE_BYTES = 1_000_000  # 1 MB limit for inline preview
+
+
 def image_to_base64(image: Image.Image) -> str:
     buf = BytesIO()
     image.save(buf, format="PNG")
-    return base64.b64encode(buf.getvalue()).decode()
+    raw = buf.getvalue()
+    if len(raw) <= MAX_INLINE_BYTES:
+        return base64.b64encode(raw).decode()
+    # Progressively shrink until under the limit
+    preview = image.copy()
+    while True:
+        w, h = preview.size
+        preview = preview.resize((w // 2, h // 2), Image.LANCZOS)
+        buf = BytesIO()
+        preview.save(buf, format="PNG")
+        raw = buf.getvalue()
+        if len(raw) <= MAX_INLINE_BYTES:
+            return base64.b64encode(raw).decode()
 
 
 def get_output_dir() -> Path:
