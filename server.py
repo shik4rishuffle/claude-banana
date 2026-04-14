@@ -63,6 +63,12 @@ def image_to_base64(image: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
+def get_output_dir() -> Path:
+    d = Path.home() / ".claude-banana" / "output"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def save_image(image: Image.Image, output_path: str | None) -> str:
     if output_path:
         p = Path(output_path).expanduser().resolve()
@@ -70,9 +76,11 @@ def save_image(image: Image.Image, output_path: str | None) -> str:
         image.save(p)
         return str(p)
     else:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            image.save(f.name)
-            return f.name
+        d = get_output_dir()
+        f = tempfile.NamedTemporaryFile(dir=d, suffix=".png", prefix="banana_", delete=False)
+        image.save(f.name)
+        f.close()
+        return f.name
 
 
 def extract_image(response) -> Image.Image | None:
