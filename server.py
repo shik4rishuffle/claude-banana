@@ -90,7 +90,11 @@ def extract_text(response) -> str:
     return "\n".join(parts)
 
 
-def image_result(image: Image.Image, saved_path: str) -> list:
+def image_result(image: Image.Image, saved_path: str, has_output_path: bool) -> list:
+    if has_output_path:
+        return [
+            types.TextContent(type="text", text=f"Image saved to {saved_path}"),
+        ]
     return [
         types.TextContent(type="text", text=f"Saved to: {saved_path}"),
         types.ImageContent(type="image", data=image_to_base64(image), mimeType="image/png"),
@@ -268,7 +272,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list:
             return [types.TextContent(type="text", text=f"No image generated. Model said: {extract_text(response)}")]
 
         saved = save_image(image, output_path)
-        return image_result(image, saved)
+        return image_result(image, saved, bool(output_path))
 
     # --- edit_image ---
     elif name == "edit_image":
@@ -290,7 +294,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list:
             return [types.TextContent(type="text", text=f"No image returned. Model said: {extract_text(response)}")]
 
         saved = save_image(image, output_path)
-        return image_result(image, saved)
+        return image_result(image, saved, bool(output_path))
 
     # --- combine_images ---
     elif name == "combine_images":
@@ -312,7 +316,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list:
             return [types.TextContent(type="text", text=f"No image returned. Model said: {extract_text(response)}")]
 
         saved = save_image(image, output_path)
-        return image_result(image, saved)
+        return image_result(image, saved, bool(output_path))
 
     # --- describe_image ---
     elif name == "describe_image":
