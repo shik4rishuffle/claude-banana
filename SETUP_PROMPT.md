@@ -8,8 +8,8 @@ git clone https://github.com/shik4rishuffle/claude-banana.git ~/Documents/GitHub
 **2. Install dependencies:**
 The project requires Python 3.10+. Install the requirements:
 ```
-pip install -r ~/Documents/GitHub/claude-banana/requirements.txt
-```
+pip install -r requirements.txt
+````
 If pip fails because the active Python is below 3.10, find or install a 3.10+ version (e.g. via pyenv) and use that instead. Note the absolute path to that Python binary - you'll need it for the config.
 
 **3. Get a Gemini API key:**
