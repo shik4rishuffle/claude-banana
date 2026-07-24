@@ -7,7 +7,7 @@ Google Gemini image generation and editing via Model Context Protocol.
 import asyncio
 import base64
 import os
-from datetime import datetime
+import tempfile
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -19,22 +19,6 @@ from google import genai
 from google.genai import types as genai_types
 from PIL import Image
 
-# rembg (background removal) is optional and heavy. Import it lazily so a
-# missing/broken install never prevents the server from booting or generating.
-try:
-    from rembg import remove as remove_bg
-except Exception:  # ImportError or onnxruntime load failure
-    remove_bg = None
-
-
-def _require_rembg():
-    if remove_bg is None:
-        raise RuntimeError(
-            "Background removal needs the 'rembg' package. Install it with: "
-            "pip install rembg"
-        )
-    return remove_bg
-
 # ---------------------------------------------------------------------------
 # Server setup
 # ---------------------------------------------------------------------------
@@ -44,7 +28,7 @@ app = Server("claude-banana")
 # Model aliases
 MODELS = {
     "flash": "gemini-3.1-flash-image-preview",   # Nano Banana 2 — fast, high quality
-    "pro":   "gemini-3-pro-image-preview",         # Nano Banana Pro — max fidelity
+    "pro":   "gemini-3.0-pro-image",              # Nano Banana Pro — max fidelity
 }
 DEFAULT_MODEL = "flash"
 
@@ -95,7 +79,7 @@ def image_to_base64(image: Image.Image) -> str:
 
 
 def get_output_dir() -> Path:
-    d = Path.home() / "Desktop" / "claude-banana"
+    d = Path.home() / ".claude-banana" / "output"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -108,19 +92,16 @@ def save_image(image: Image.Image, output_path: str | None) -> str:
         return str(p)
     else:
         d = get_output_dir()
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        p = d / f"banana_{stamp}.png"
-        image.save(p)
-        return str(p)
+        f = tempfile.NamedTemporaryFile(dir=d, suffix=".png", prefix="banana_", delete=False)
+        image.save(f.name)
+        f.close()
+        return f.name
 
 
 def extract_image(response) -> Image.Image | None:
     for part in response.candidates[0].content.parts:
         if part.inline_data is not None:
-            img = Image.open(BytesIO(part.inline_data.data))
-            if img.mode != "RGBA":
-                img = img.convert("RGBA")
-            return img
+            return Image.open(BytesIO(part.inline_data.data))
     return None
 
 
@@ -132,96 +113,11 @@ def extract_text(response) -> str:
     return "\n".join(parts)
 
 
-def restore_transparency(source: Image.Image, result: Image.Image) -> Image.Image:
-    """Apply the alpha channel from the source image onto the result."""
-    src = source.convert("RGBA")
-    res = result.convert("RGBA")
-    # Resize source alpha to match result dimensions if they differ
-    if src.size != res.size:
-        src = src.resize(res.size, Image.LANCZOS)
-    # Replace result's alpha with source's alpha
-    r, g, b, _ = res.split()
-    _, _, _, a = src.split()
-    return Image.merge("RGBA", (r, g, b, a))
-
-
 def image_result(image: Image.Image, saved_path: str) -> list:
     return [
         types.TextContent(type="text", text=f"Image saved to {saved_path}"),
-        types.EmbeddedResource(
-            type="resource",
-            resource=types.BlobResourceContents(
-                uri=f"file://{saved_path}",
-                mimeType="image/png",
-                blob=image_to_base64(image),
-            ),
-        ),
+        types.ImageContent(type="image", data=image_to_base64(image), mimeType="image/png"),
     ]
-
-
-# ---------------------------------------------------------------------------
-# Prompts
-# ---------------------------------------------------------------------------
-
-PROMPT_FILE = Path(__file__).parent / "image-builder.md"
-
-
-def load_prompt_content() -> str:
-    """Load image-builder.md, stripping YAML frontmatter if present."""
-    text = PROMPT_FILE.read_text()
-    if text.startswith("---"):
-        _, _, body = text.split("---", 2)
-        return body.strip()
-    return text.strip()
-
-
-@app.list_prompts()
-async def list_prompts() -> list[types.Prompt]:
-    return [
-        types.Prompt(
-            name="image-builder",
-            description=(
-                "Expert image prompt engineer — enriches vague ideas into "
-                "detailed prompts and generates images via Nano Banana."
-            ),
-            arguments=[
-                types.PromptArgument(
-                    name="request",
-                    description="What you want to create, edit, or combine.",
-                    required=False,
-                ),
-            ],
-        ),
-    ]
-
-
-@app.get_prompt()
-async def get_prompt(name: str, arguments: dict[str, str] | None) -> types.GetPromptResult:
-    if name != "image-builder":
-        raise ValueError(f"Unknown prompt: {name}")
-
-    content = load_prompt_content()
-    request = (arguments or {}).get("request", "")
-
-    messages = [
-        types.PromptMessage(
-            role="user",
-            content=types.TextContent(type="text", text=content),
-        ),
-    ]
-
-    if request:
-        messages.append(
-            types.PromptMessage(
-                role="user",
-                content=types.TextContent(type="text", text=request),
-            ),
-        )
-
-    return types.GetPromptResult(
-        description="Image Builder — expert prompt enrichment for Nano Banana",
-        messages=messages,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -261,16 +157,6 @@ async def list_tools() -> list[types.Tool]:
                         "description": (
                             "'flash' = Nano Banana 2 (fast, great quality, default). "
                             "'pro' = Nano Banana Pro (max fidelity, slower)."
-                        ),
-                    },
-                    "transparent_background": {
-                        "type": "boolean",
-                        "description": (
-                            "Remove the background after generation to produce a "
-                            "transparent PNG. Use for logos, icons, stickers, or any "
-                            "subject that should float without a background. "
-                            "Do NOT mention 'transparent background' in the prompt — "
-                            "this flag handles it automatically."
                         ),
                     },
                 },
@@ -349,28 +235,6 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="remove_background",
-            description=(
-                "Remove the background from an image to produce a transparent PNG. "
-                "Use for logos, icons, stickers, product photos, or any subject "
-                "that should float without a background."
-            ),
-            inputSchema={
-                "type": "object",
-                "required": ["image_path"],
-                "properties": {
-                    "image_path": {
-                        "type": "string",
-                        "description": "Absolute or ~ path to the input image.",
-                    },
-                    "output_path": {
-                        "type": "string",
-                        "description": "Optional path to save the result.",
-                    },
-                },
-            },
-        ),
-        types.Tool(
             name="describe_image",
             description=(
                 "Analyse an image and return a detailed description or answer a "
@@ -413,10 +277,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list:
         prompt = arguments["prompt"]
         model = resolve_model(arguments.get("model"))
         output_path = arguments.get("output_path")
-        want_transparent = arguments.get("transparent_background", False)
 
-        response = await asyncio.to_thread(
-            client.models.generate_content,
+        response = client.models.generate_content(
             model=model,
             contents=prompt,
             config=genai_types.GenerateContentConfig(
@@ -428,9 +290,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list:
         if image is None:
             return [types.TextContent(type="text", text=f"No image generated. Model said: {extract_text(response)}")]
 
-        if want_transparent:
-            image = await asyncio.to_thread(_require_rembg(), image)
-
         saved = save_image(image, output_path)
         return image_result(image, saved)
 
@@ -441,13 +300,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list:
         model = resolve_model(arguments.get("model"))
         output_path = arguments.get("output_path")
 
-        # Check if source has transparency before sending to Gemini
-        source_has_alpha = (
-            input_image.mode == "RGBA" and input_image.getchannel("A").getextrema()[0] < 255
-        )
-
-        response = await asyncio.to_thread(
-            client.models.generate_content,
+        response = client.models.generate_content(
             model=model,
             contents=[prompt, input_image],
             config=genai_types.GenerateContentConfig(
@@ -459,10 +312,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list:
         if image is None:
             return [types.TextContent(type="text", text=f"No image returned. Model said: {extract_text(response)}")]
 
-        # Restore transparency from source if Gemini filled the background
-        if source_has_alpha:
-            image = restore_transparency(input_image, image)
-
         saved = save_image(image, output_path)
         return image_result(image, saved)
 
@@ -473,8 +322,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list:
         prompt = arguments["prompt"]
         output_path = arguments.get("output_path")
 
-        response = await asyncio.to_thread(
-            client.models.generate_content,
+        response = client.models.generate_content(
             model=resolve_model("flash"),
             contents=[prompt, img1, img2],
             config=genai_types.GenerateContentConfig(
@@ -489,16 +337,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list:
         saved = save_image(image, output_path)
         return image_result(image, saved)
 
-    # --- remove_background ---
-    elif name == "remove_background":
-        input_image = load_image(arguments["image_path"])
-        output_path = arguments.get("output_path")
-
-        image = await asyncio.to_thread(_require_rembg(), input_image)
-
-        saved = save_image(image, output_path)
-        return image_result(image, saved)
-
     # --- describe_image ---
     elif name == "describe_image":
         input_image = load_image(arguments["image_path"])
@@ -507,8 +345,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list:
             "composition, colours, mood, style, any visible text, and any notable details."
         )
 
-        response = await asyncio.to_thread(
-            client.models.generate_content,
+        response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=[question, input_image],
         )
